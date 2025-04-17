@@ -15,9 +15,14 @@ const altitudeData = {
     timestamps: [],
     values: []
 };
+const accelData = {
+    timestamps: [],
+    values: []
+};
 
-// Chart reference
+// Chart references
 let altitudeChart = null;
+let accelChart = null;
 
 // DOM elements
 const connectBtn = document.getElementById('connectBtn');
@@ -30,6 +35,21 @@ const ledGreen = document.getElementById('ledGreen');
 const ledBlue = document.getElementById('ledBlue');
 const logContainer = document.getElementById('logContainer');
 const clearLogBtn = document.getElementById('clearLogBtn');
+const calibrateBtn = document.getElementById('calibrateBtn');
+const testSoundBtn = document.getElementById('testSoundBtn');
+const configBtn = document.getElementById('configBtn');
+const configPanel = document.getElementById('configPanel');
+const closeConfigBtn = document.getElementById('closeConfigBtn');
+const saveConfigBtn = document.getElementById('saveConfigBtn');
+const getConfigBtn = document.getElementById('getConfigBtn');
+
+// Range input value displays
+document.getElementById('sounderFreq').addEventListener('input', function() {
+    document.getElementById('sounderFreqValue').textContent = this.value + ' Hz';
+});
+document.getElementById('sounderDuration').addEventListener('input', function() {
+    document.getElementById('sounderDurationValue').textContent = this.value + ' ms';
+});
 
 // Check if Web Bluetooth is available
 if (!navigator.bluetooth) {
@@ -43,17 +63,24 @@ function initialize() {
     // Set up event listeners
     connectBtn.addEventListener('click', toggleConnection);
     clearLogBtn.addEventListener('click', clearLog);
+    calibrateBtn.addEventListener('click', calibrateDevice);
+    testSoundBtn.addEventListener('click', testSound);
+    configBtn.addEventListener('click', showConfigPanel);
+    closeConfigBtn.addEventListener('click', hideConfigPanel);
+    saveConfigBtn.addEventListener('click', saveConfiguration);
+    getConfigBtn.addEventListener('click', getConfiguration);
     
-    // Initialize the chart
-    initChart();
+    // Initialize the charts
+    initCharts();
     
     addLogEntry('Page loaded. Ready to connect.');
 }
 
-// Initialize the altitude chart
-function initChart() {
-    const ctx = document.getElementById('altitudeChart').getContext('2d');
-    altitudeChart = new Chart(ctx, {
+// Initialize the charts
+function initCharts() {
+    // Altitude chart
+    const altCtx = document.getElementById('altitudeChart').getContext('2d');
+    altitudeChart = new Chart(altCtx, {
         type: 'line',
         data: {
             labels: [],
@@ -62,6 +89,44 @@ function initChart() {
                 data: [],
                 borderColor: 'rgba(75, 192, 192, 1)',
                 backgroundColor: 'rgba(75, 192, 192, 0.2)',
+                borderWidth: 2,
+                tension: 0.2,
+                fill: true,
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                y: {
+                    beginAtZero: false
+                },
+                x: {
+                    display: false
+                }
+            },
+            plugins: {
+                legend: {
+                    display: false
+                }
+            },
+            animation: {
+                duration: 0 // Disables animation for better performance
+            }
+        }
+    });
+    
+    // Acceleration chart
+    const accelCtx = document.getElementById('accelChart').getContext('2d');
+    accelChart = new Chart(accelCtx, {
+        type: 'line',
+        data: {
+            labels: [],
+            datasets: [{
+                label: 'Acceleration (G)',
+                data: [],
+                borderColor: 'rgba(255, 99, 132, 1)',
+                backgroundColor: 'rgba(255, 99, 132, 0.2)',
                 borderWidth: 2,
                 tension: 0.2,
                 fill: true,
@@ -140,6 +205,9 @@ async function connectToDevice() {
         updateConnectionStatus(true);
         addLogEntry('Connected successfully!');
         
+        // Get current configuration
+        setTimeout(getConfiguration, 1000); // Wait a bit to ensure stable connection
+        
     } catch (error) {
         addLogEntry(`Connection error: ${error}`, true);
         disconnectFromDevice();
@@ -167,13 +235,19 @@ function handleNotifications(event) {
 
 // Process the serial data from the device
 function processSerialData(data) {
+    // Handle configuration data
+    if (data.startsWith("CFG:")) {
+        processConfigData(data.substring(4));
+        return;
+    }
+    
     // Handle the different data types based on prefix
     if (data.startsWith("A:")) {
         // Altitude data
         const altitude = parseFloat(data.substring(2));
         if (!isNaN(altitude)) {
             currentAltitude.textContent = `${altitude.toFixed(2)} m`;
-            addDataPoint(altitude); // Add to chart
+            addAltitudeDataPoint(altitude); // Add to chart
         }
     } 
     else if (data.startsWith("C:")) {
@@ -208,6 +282,13 @@ function processSerialData(data) {
         // Update drift LED based on stability
         ledBlue.classList.toggle('active', motion === 'DRIFT');
     }
+    else if (data.startsWith("G:")) {
+        // Acceleration data
+        const accel = parseFloat(data.substring(2));
+        if (!isNaN(accel)) {
+            addAccelDataPoint(accel);
+        }
+    }
     // Fallback for non-prefixed data (original format)
     else {
         // Check for altitude data format in the original format
@@ -216,31 +297,36 @@ function processSerialData(data) {
         if (altitudeMatch) {
             const altitude = parseFloat(altitudeMatch[1]);
             currentAltitude.textContent = `${altitude.toFixed(2)} m`;
-            addDataPoint(altitude);
+            addAltitudeDataPoint(altitude);
         }
     }
 }
 
-// Update the altitude display elements
-function updateAltitudeDisplay(altitude, change, motion) {
-    currentAltitude.textContent = `${altitude.toFixed(2)} m`;
-    elevationChange.textContent = `${change.toFixed(2)} cm`;
-    motionStatus.textContent = motion;
-    
-    // Add classes for styling based on motion
-    if (motion === 'UP' && change > 0) {
-        elevationChange.classList.add('rising');
-        elevationChange.classList.remove('falling');
-    } else if (change < 0) {
-        elevationChange.classList.add('falling');
-        elevationChange.classList.remove('rising');
-    } else {
-        elevationChange.classList.remove('rising', 'falling');
+// Process config data
+function processConfigData(data) {
+    try {
+        const config = JSON.parse(data);
+        
+        // Update input fields with received values
+        document.getElementById('seaLevelPressure').value = config.SEA_LEVEL_PRESSURE || 1013.25;
+        document.getElementById('movementThreshold').value = config.MOVEMENT_THRESHOLD * 100 || 10;
+        document.getElementById('accelThreshold').value = config.IMU_ACCEL_THRESHOLD || 0.15;
+        document.getElementById('sounderType').value = config.SOUNDER_TYPE || 2;
+        document.getElementById('sounderFreq').value = config.SOUNDER_BASE_FREQ || 800;
+        document.getElementById('sounderDuration').value = config.SOUNDER_DURATION || 100;
+        
+        // Update displayed values for range inputs
+        document.getElementById('sounderFreqValue').textContent = `${document.getElementById('sounderFreq').value} Hz`;
+        document.getElementById('sounderDurationValue').textContent = `${document.getElementById('sounderDuration').value} ms`;
+        
+        addLogEntry("Configuration loaded from device");
+    } catch (error) {
+        addLogEntry(`Error parsing configuration: ${error}`, true);
     }
 }
 
-// Add a data point to the chart
-function addDataPoint(altitude) {
+// Add an altitude data point to the chart
+function addAltitudeDataPoint(altitude) {
     const now = new Date();
     const timestamp = now.toLocaleTimeString();
     
@@ -258,6 +344,27 @@ function addDataPoint(altitude) {
     altitudeChart.data.labels = altitudeData.timestamps;
     altitudeChart.data.datasets[0].data = altitudeData.values;
     altitudeChart.update();
+}
+
+// Add an acceleration data point to the chart
+function addAccelDataPoint(accel) {
+    const now = new Date();
+    const timestamp = now.toLocaleTimeString();
+    
+    // Add new data
+    accelData.timestamps.push(timestamp);
+    accelData.values.push(accel);
+    
+    // Limit the number of data points
+    if (accelData.timestamps.length > maxDataPoints) {
+        accelData.timestamps.shift();
+        accelData.values.shift();
+    }
+    
+    // Update chart
+    accelChart.data.labels = accelData.timestamps;
+    accelChart.data.datasets[0].data = accelData.values;
+    accelChart.update();
 }
 
 // Handle device disconnection
@@ -297,16 +404,25 @@ function updateConnectionStatus(connected) {
         connectionStatus.textContent = 'Connected';
         connectionStatus.classList.add('connected');
         connectBtn.textContent = 'Disconnect';
+        calibrateBtn.disabled = false;
+        testSoundBtn.disabled = false;
+        configBtn.disabled = false;
     } else {
         connectionStatus.textContent = 'Disconnected';
         connectionStatus.classList.remove('connected');
         connectBtn.textContent = 'Connect to Device';
         connectBtn.classList.remove('disconnecting');
+        calibrateBtn.disabled = true;
+        testSoundBtn.disabled = true;
+        configBtn.disabled = true;
         
         // Reset LEDs
         ledRed.classList.remove('active');
         ledGreen.classList.remove('active');
         ledBlue.classList.remove('active');
+        
+        // Hide config panel if shown
+        hideConfigPanel();
     }
 }
 
@@ -352,12 +468,71 @@ function clearLog() {
 function sendCommand(command) {
     if (!isConnected || !txCharacteristic) {
         addLogEntry('Not connected to device', true);
-        return;
+        return false;
     }
     
-    const encoder = new TextEncoder();
-    txCharacteristic.writeValue(encoder.encode(command));
-    addLogEntry(`Command sent: ${command}`);
+    try {
+        const encoder = new TextEncoder();
+        txCharacteristic.writeValue(encoder.encode(command));
+        addLogEntry(`Command sent: ${command}`);
+        return true;
+    } catch (error) {
+        addLogEntry(`Error sending command: ${error}`, true);
+        return false;
+    }
+}
+
+// Calibrate the device
+function calibrateDevice() {
+    if (sendCommand("CALIBRATE")) {
+        addLogEntry('Calibration requested. Keep device still...');
+    }
+}
+
+// Test the device sound
+function testSound() {
+    if (sendCommand("SOUND")) {
+        addLogEntry('Sound test requested.');
+    }
+}
+
+// Show configuration panel
+function showConfigPanel() {
+    configPanel.classList.remove('hidden');
+}
+
+// Hide configuration panel
+function hideConfigPanel() {
+    configPanel.classList.add('hidden');
+}
+
+// Get current configuration from the device
+function getConfiguration() {
+    if (sendCommand("GET_CONFIG")) {
+        addLogEntry('Requesting device configuration...');
+    }
+}
+
+// Save configuration to the device
+function saveConfiguration() {
+    // Gather configuration values
+    const config = {
+        SEA_LEVEL_PRESSURE: parseFloat(document.getElementById('seaLevelPressure').value),
+        MOVEMENT_THRESHOLD: parseFloat(document.getElementById('movementThreshold').value) / 100, // Convert from cm to m
+        IMU_ACCEL_THRESHOLD: parseFloat(document.getElementById('accelThreshold').value),
+        SOUNDER_TYPE: parseInt(document.getElementById('sounderType').value),
+        SOUNDER_BASE_FREQ: parseInt(document.getElementById('sounderFreq').value),
+        SOUNDER_DURATION: parseInt(document.getElementById('sounderDuration').value)
+    };
+    
+    // Convert to JSON and send
+    const configJson = JSON.stringify(config);
+    const command = `SET_CONFIG:${configJson}`;
+    
+    if (sendCommand(command)) {
+        addLogEntry('Configuration sent to device.');
+        hideConfigPanel();
+    }
 }
 
 // Initialize on page load
